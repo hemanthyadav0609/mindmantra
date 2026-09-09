@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
 import {
   Activity,
   ArrowLeft,
@@ -82,8 +84,23 @@ type Note = {
   createdAt: string;
 };
 
-type SavedMemory = { id: string; title: string; description: string; category: string; date: string; time?: string; pinned: boolean; createdAt: string; language?: "en-IN" | "hi-IN" | "te-IN"; source?: "voice" | "typed" };
+type SavedMemory = { id: string; title: string; description: string; category: string; date: string; time?: string; pinned: boolean; createdAt: string; language?: "en-IN" | "hi-IN" | "te-IN"; source?: "voice" | "typed" | "family" };
 type FamilyMemory = SavedMemory & { relationship?: string };
+
+function fromDatabaseMemory(memory: any): SavedMemory {
+  return {
+    id: memory.externalId,
+    title: memory.title,
+    description: memory.description,
+    category: memory.category,
+    date: memory.memoryDate,
+    time: memory.memoryTime || undefined,
+    pinned: Boolean(memory.pinned),
+    createdAt: new Date(memory.createdAt).toISOString(),
+    language: memory.language || undefined,
+    source: memory.source || "typed",
+  };
+}
 
 type MemoryCard = { id: number; value: string };
 
@@ -187,6 +204,13 @@ function makeWordGrid(size: number, words: string[]) {
 }
 
 export default function Home() {
+  // The useAuth hook provides authentication state.
+  // To implement login/logout, call logout(), or start login from an event
+  // handler: onClick={() => startLogin()} (imported from "@/const"). Never call
+  // startLogin() during render (no href={startLogin()}) — it mints a one-time
+  // nonce cookie and must run only at the moment of navigation.
+  let { user, loading, error, isAuthenticated, logout } = useAuth();
+
   const [page, setPage] = useState<Page>("dashboard");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [profile, setProfile] = useLocalStorage<Profile>("mindmateProfile", {
@@ -201,6 +225,13 @@ export default function Home() {
   const [familyMemories, setFamilyMemories] = useLocalStorage<FamilyMemory[]>("mindmateFamilyMemoryVault", seedFamily);
   const [selectedGame, setSelectedGame] = useState<GameType>("memory");
   const [fontScale, setFontScale] = useLocalStorage<number>("mindmateFontScale", 1);
+  const [ownerKey] = useLocalStorage<string>("mindmateBackendOwnerKey", uid("owner"));
+  const backendMemories = trpc.mindmitra.memories.useQuery({ ownerKey });
+  const backendActivities = trpc.mindmitra.activityLog.useQuery({ ownerKey });
+  const saveMemoryMutation = trpc.mindmitra.saveMemory.useMutation();
+  const deleteMemoryMutation = trpc.mindmitra.deleteMemory.useMutation();
+  const activityMutation = trpc.mindmitra.activity.useMutation();
+  const [backendSeeded, setBackendSeeded] = useState(false);
   const averageScore = average(results.map((result) => result.score));
   const averageAccuracy = average(results.map((result) => result.accuracy));
   const dashboardMetrics = getDashboardMetrics(results);
@@ -211,6 +242,17 @@ export default function Home() {
   const trainingPlan = useMemo(() => getTrainingPlan(results, profile.difficulty), [results, profile.difficulty]);
   const recordResult = (result: Omit<Result, "id" | "createdAt">) => {
     setResults((current) => [...current, { ...result, id: uid("result"), createdAt: new Date().toISOString() }]);
+    activityMutation.mutate({ ownerKey, activityType: "game_completed", game: result.game, score: result.score, accuracy: result.accuracy });
+  };
+
+  const persistMemory = (memory: SavedMemory) => {
+    saveMemoryMutation.mutate({ ownerKey, externalId: memory.id, title: memory.title, description: memory.description, category: memory.category, memoryDate: memory.date, memoryTime: memory.time, language: memory.language, source: memory.source || "typed", pinned: memory.pinned });
+    activityMutation.mutate({ ownerKey, activityType: "memory_added", memoryExternalId: memory.id, language: memory.language });
+  };
+
+  const removePersistedMemory = (externalId: string) => {
+    deleteMemoryMutation.mutate({ ownerKey, externalId });
+    activityMutation.mutate({ ownerKey, activityType: "memory_deleted", memoryExternalId: externalId });
   };
 
   const recommendedDifficulty = recommendation.difficulty as Difficulty;
@@ -227,6 +269,19 @@ export default function Home() {
       window.localStorage.setItem("mindmateStreak", JSON.stringify(streak));
     } catch { /* local persistence is best effort */ }
   }, [recommendedDifficulty, trainingPlan, dailyChallenge, streak]);
+
+  useEffect(() => {
+    if (backendMemories.data === undefined || backendSeeded) return;
+    setBackendSeeded(true);
+    if (backendMemories.data.length > 0) {
+      const hydrated = backendMemories.data.map(fromDatabaseMemory);
+      setPersonalMemories(hydrated.filter((memory) => memory.source !== "family"));
+      setFamilyMemories(hydrated.filter((memory) => memory.source === "family") as FamilyMemory[]);
+      return;
+    }
+    personalMemories.forEach(persistMemory);
+    familyMemories.forEach(persistMemory);
+  }, [backendMemories.data, backendSeeded]);
 
   const goTo = (nextPage: Page) => {
     setPage(nextPage);
@@ -309,15 +364,15 @@ export default function Home() {
           {page === "dashboard" && <DashboardPage profile={profile} averageScore={averageScore} averageAccuracy={averageAccuracy} streak={streak} notes={notes} results={results} recommendedDifficulty={recommendedDifficulty} recommendation={recommendation} trainingPlan={trainingPlan} dailyChallenge={dailyChallenge} personalMemories={personalMemories} familyMemories={familyMemories} onNavigate={goTo} onSelectGame={(game) => { setSelectedGame(game); goTo("exercises"); }} />}
           {page === "exercises" && <ExercisesPage selectedGame={selectedGame} setSelectedGame={setSelectedGame} recommendedDifficulty={recommendedDifficulty} recordResult={recordResult} results={results} />}
           {page === "memories" && <MemoriesPage notes={notes} setNotes={setNotes} completedNotes={completedNotes} />}
-          {page === "memorybank" && <MemoryBankPage memories={personalMemories} setMemories={setPersonalMemories} />}
-          {page === "family" && <FamilyVaultPage memories={familyMemories} setMemories={setFamilyMemories} />}
+          {page === "memorybank" && <MemoryBankPage memories={personalMemories} setMemories={setPersonalMemories} onPersist={persistMemory} onDeletePersist={removePersistedMemory} />}
+          {page === "family" && <FamilyVaultPage memories={familyMemories} setMemories={setFamilyMemories} onPersist={persistMemory} onDeletePersist={removePersistedMemory} />}
           {page === "reminiscence" && <ReminiscencePage memories={[...personalMemories, ...familyMemories]} onNavigate={goTo} />}
-          {page === "voice" && <VoicePage onNavigate={goTo} memories={[...personalMemories, ...familyMemories]} setMemories={setPersonalMemories} />}
+          {page === "voice" && <VoicePage onNavigate={goTo} memories={[...personalMemories, ...familyMemories]} setMemories={setPersonalMemories} onPersist={persistMemory} />}
           {page === "progress" && <ProgressPage results={results} averageScore={averageScore} averageAccuracy={averageAccuracy} />}
           {page === "profile" && <ProfilePage profile={profile} setProfile={setProfile} />}
-          {page === "caretaker" && <CaretakerPage memories={personalMemories} familyMemories={familyMemories} results={results} notes={notes} />}
+          {page === "caretaker" && <CaretakerPage memories={personalMemories} familyMemories={familyMemories} results={results} notes={notes} backendMemories={backendMemories.data?.map(fromDatabaseMemory) || []} backendActivities={backendActivities.data || []} />}
           {page === "settings" && <AccessibilitySettingsPage fontScale={fontScale} setFontScale={setFontScale} />}
-          <footer className="mt-12 flex flex-col gap-2 border-t border-[#dfe8e0] pt-5 text-[11px] text-[#91a097] sm:flex-row sm:items-center sm:justify-between"><span>MindMitra AI · Cognitive Wellness Companion</span><span className="flex items-center gap-1"><LockKeyhole size={12} /> Your memories are stored locally on this device.</span></footer>
+          <footer className="mt-12 flex flex-col gap-2 border-t border-[#dfe8e0] pt-5 text-[11px] text-[#91a097] sm:flex-row sm:items-center sm:justify-between"><span>MindMitra AI · Cognitive Wellness Companion</span><span className="flex items-center gap-1"><LockKeyhole size={12} /> Your memories are stored in the private MindMitra database, with local fallback.</span></footer>
         </div>
         <nav className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around border-t border-[#dfe8e0] bg-[#f8fbf7]/95 px-2 py-2 shadow-[0_-8px_24px_rgba(47,79,64,.08)] backdrop-blur-xl md:hidden" aria-label="Mobile navigation">
           {[{ id: "dashboard" as Page, label: "Home", icon: Activity }, { id: "exercises" as Page, label: "Games", icon: Gamepad2 }, { id: "memorybank" as Page, label: "Memories", icon: HeartPulse }, { id: "voice" as Page, label: "Voice", icon: Mic }, { id: "progress" as Page, label: "Progress", icon: Trophy }, { id: "profile" as Page, label: "Profile", icon: UserRound }].map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => goTo(item.id)} className={`flex min-w-[50px] flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[10px] font-bold ${page === item.id ? "bg-[#deede4] text-[#2c6e5b]" : "text-[#83938a]"}`} aria-label={item.label}><Icon size={17} /><span>{item.label}</span></button>; })}
@@ -508,36 +563,36 @@ function ReadAloudButton({ text }: { text: string }) {
   return <button onClick={speak} className="flex items-center gap-1.5 rounded-lg bg-[#eef5ef] px-3 py-2 text-[11px] font-bold text-[#2c6e5b] hover:bg-[#deede4]" aria-label="Read aloud"><Volume2 size={14} /> Read aloud</button>;
 }
 
-function MemoryBankPage({ memories, setMemories }: { memories: SavedMemory[]; setMemories: React.Dispatch<React.SetStateAction<SavedMemory[]>> }) {
+function MemoryBankPage({ memories, setMemories, onPersist, onDeletePersist }: { memories: SavedMemory[]; setMemories: React.Dispatch<React.SetStateAction<SavedMemory[]>>; onPersist: (memory: SavedMemory) => void; onDeletePersist: (id: string) => void }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
   const [showComposer, setShowComposer] = useState(false);
   const [draft, setDraft] = useState({ title: "", description: "", category: "Person", date: new Date().toISOString().slice(0, 10) });
   const categories = ["All", "Person", "Place", "Favorite", "Event", "Personal Memory", "Important"];
   const filtered = memories.filter((memory) => `${memory.title} ${memory.description}`.toLowerCase().includes(query.toLowerCase()) && (category === "All" || memory.category === category));
-  const saveMemory = () => { if (!draft.title.trim()) return; setMemories((current) => [{ ...draft, id: makeId("memory"), pinned: false, createdAt: new Date().toISOString() }, ...current]); setDraft({ title: "", description: "", category: "Person", date: new Date().toISOString().slice(0, 10) }); setShowComposer(false); };
+  const saveMemory = () => { if (!draft.title.trim()) return; const memory = { ...draft, id: makeId("memory"), pinned: false, createdAt: new Date().toISOString(), source: "typed" as const }; setMemories((current) => [memory, ...current]); onPersist(memory); setDraft({ title: "", description: "", category: "Person", date: new Date().toISOString().slice(0, 10) }); setShowComposer(false); };
   return <CollectionPage eyebrow="Private memory bank" title="My memories" description="Save people, places, favourite moments, and personal details you want to keep close." accent="green" actionLabel="Add memory" onAction={() => setShowComposer((value) => !value)}>
     <div className="mb-5 grid gap-3 sm:grid-cols-4"><MiniStat label="Total memories" value={memories.length} /><MiniStat label="People" value={memories.filter((memory) => memory.category === "Person").length} /><MiniStat label="Places" value={memories.filter((memory) => memory.category === "Place").length} /><MiniStat label="Pinned" value={memories.filter((memory) => memory.pinned).length} /></div>
     {showComposer && <MemoryComposer draft={draft} setDraft={setDraft} onSave={saveMemory} onCancel={() => setShowComposer(false)} />}
     <div className="mb-5 flex flex-col gap-3 sm:flex-row"><div className="flex flex-1 items-center gap-2 rounded-xl border border-[#e0eae1] bg-white px-3 py-3"><Search size={16} className="text-[#9aa9a0]" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search personal memories" className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[#aab6ad]" /></div><select value={category} onChange={(event) => setCategory(event.target.value)} className="rounded-xl border border-[#e0eae1] bg-white px-3 text-[12px] text-[#5c7466] outline-none">{categories.map((item) => <option key={item}>{item}</option>)}</select></div>
-    <div className="grid gap-4 lg:grid-cols-2">{filtered.map((memory) => <MemoryCard key={memory.id} memory={memory} onPin={() => setMemories((current) => current.map((item) => item.id === memory.id ? { ...item, pinned: !item.pinned } : item))} onDelete={() => setMemories((current) => current.filter((item) => item.id !== memory.id))} />)}</div>
+    <div className="grid gap-4 lg:grid-cols-2">{filtered.map((memory) => <MemoryCard key={memory.id} memory={memory} onPin={() => setMemories((current) => current.map((item) => item.id === memory.id ? { ...item, pinned: !item.pinned } : item))} onDelete={() => { setMemories((current) => current.filter((item) => item.id !== memory.id)); onDeletePersist(memory.id); }} />)}</div>
     {!filtered.length && <EmptyState title="No personal memories yet." description="Save a special moment, person, or place." onAdd={() => setShowComposer(true)} />}
     <Timeline memories={memories} />
   </CollectionPage>;
 }
 
-function FamilyVaultPage({ memories, setMemories }: { memories: FamilyMemory[]; setMemories: React.Dispatch<React.SetStateAction<FamilyMemory[]>> }) {
+function FamilyVaultPage({ memories, setMemories, onPersist, onDeletePersist }: { memories: FamilyMemory[]; setMemories: React.Dispatch<React.SetStateAction<FamilyMemory[]>>; onPersist: (memory: SavedMemory) => void; onDeletePersist: (id: string) => void }) {
   const [showComposer, setShowComposer] = useState(false);
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState({ title: "", description: "", category: "Family Event", date: new Date().toISOString().slice(0, 10) });
   const filtered = memories.filter((memory) => `${memory.title} ${memory.description}`.toLowerCase().includes(query.toLowerCase()));
-  const saveMemory = () => { if (!draft.title.trim()) return; setMemories((current) => [{ ...draft, id: makeId("family"), pinned: false, createdAt: new Date().toISOString(), relationship: "Family" }, ...current]); setDraft({ title: "", description: "", category: "Family Event", date: new Date().toISOString().slice(0, 10) }); setShowComposer(false); };
-  return <CollectionPage eyebrow="Shared family memories" title="Family Memory Vault" description="Keep your family's people, events, stories, and special moments together. Local prototype — not synced between devices." accent="amber" actionLabel="Add family memory" onAction={() => setShowComposer((value) => !value)}>
-    <div className="mb-5 rounded-[18px] border border-[#f0dfc0] bg-[#fff7e9] p-4 text-[12px] leading-relaxed text-[#8e6f40]"><strong>Family Memory Vault — Local Prototype.</strong> This information is stored only in this browser until a future synced version is added.</div>
+  const saveMemory = () => { if (!draft.title.trim()) return; const memory = { ...draft, id: makeId("family"), pinned: false, createdAt: new Date().toISOString(), relationship: "Family", source: "family" as const }; setMemories((current) => [memory, ...current]); onPersist(memory); setDraft({ title: "", description: "", category: "Family Event", date: new Date().toISOString().slice(0, 10) }); setShowComposer(false); };
+  return <CollectionPage eyebrow="Shared family memories" title="Family Memory Vault" description="Keep your family's people, events, stories, and special moments together in the private MindMitra database." accent="amber" actionLabel="Add family memory" onAction={() => setShowComposer((value) => !value)}>
+    <div className="mb-5 rounded-[18px] border border-[#f0dfc0] bg-[#fff7e9] p-4 text-[12px] leading-relaxed text-[#8e6f40]"><strong>Private family storage.</strong> Family memories sync to this prototype user's database and remain available across sessions.</div>
     <div className="mb-5 grid gap-3 sm:grid-cols-3"><MiniStat label="Family memories" value={memories.length} /><MiniStat label="Family members" value={3} /><MiniStat label="Pinned moments" value={memories.filter((memory) => memory.pinned).length} /></div>
     {showComposer && <MemoryComposer draft={draft} setDraft={setDraft} onSave={saveMemory} onCancel={() => setShowComposer(false)} family />}
     <div className="mb-5 flex items-center gap-2 rounded-xl border border-[#e7dfcf] bg-white px-3 py-3"><Search size={16} className="text-[#b29b72]" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the family vault" className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[#b5a78e]" /></div>
-    <div className="grid gap-4 lg:grid-cols-2">{filtered.map((memory) => <MemoryCard key={memory.id} memory={memory} family onPin={() => setMemories((current) => current.map((item) => item.id === memory.id ? { ...item, pinned: !item.pinned } : item))} onDelete={() => setMemories((current) => current.filter((item) => item.id !== memory.id))} />)}</div>
+    <div className="grid gap-4 lg:grid-cols-2">{filtered.map((memory) => <MemoryCard key={memory.id} memory={memory} family onPin={() => setMemories((current) => current.map((item) => item.id === memory.id ? { ...item, pinned: !item.pinned } : item))} onDelete={() => { setMemories((current) => current.filter((item) => item.id !== memory.id)); onDeletePersist(memory.id); }} />)}</div>
     {!filtered.length && <EmptyState title="No family memories yet." description="Start building your family memory collection." onAdd={() => setShowComposer(true)} />}
     <Timeline memories={memories} family />
   </CollectionPage>;
@@ -558,7 +613,7 @@ function ReminiscencePage({ memories, onNavigate }: { memories: Array<SavedMemor
   return <div className="mx-auto max-w-[820px]"><div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-start"><div><div className="eyebrow mb-2 text-[#8068a7]">Gentle conversation mode</div><h1 className="display-font text-[38px] font-bold tracking-[-.04em] text-[#23463a]">AI Reminiscence</h1><p className="mt-2 text-[14px] text-[#73847a]">Let's revisit a special memory, using only memories you have saved.</p></div><button onClick={() => onNavigate("dashboard")} className="flex w-fit items-center gap-2 rounded-xl border border-[#dfe8e1] bg-white px-4 py-2.5 text-[12px] font-bold text-[#5f7568] shadow-sm transition hover:bg-[#eef6ef] hover:text-[#2c6e5b]" aria-label="Exit AI Reminiscence and return home"><X size={15} /> Exit</button></div><section className="dark-card grid-pattern relative overflow-hidden p-7 sm:p-10"><div className="relative z-10"><div className="mb-7 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[.14em] text-[#c5addd]"><Sparkles size={15} /> MindMitra reminiscence</div>{memory ? <><div className="mb-6 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-[11px] font-bold text-[#d8c7e5]"><HeartPulse size={13} /> {memory.category}</div><h2 className="display-font max-w-[560px] text-[34px] leading-tight text-white">{prompt}</h2><p className="mt-5 max-w-[560px] text-[15px] leading-relaxed text-[#c6d8ca]">{memory.description}</p><div className="mt-8 flex flex-wrap gap-3"><button onClick={speak} className="flex items-center gap-2 rounded-xl bg-[#f7f1fb] px-4 py-3 text-[12px] font-bold text-[#6e5791]"><Volume2 size={16} /> Read aloud</button><button onClick={() => setIndex((value) => value + 1)} className="flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-[12px] font-bold text-white"><ArrowRight size={16} /> Next memory</button></div></> : <><h2 className="display-font text-[31px] text-white">I don't have enough saved memories yet.</h2><button onClick={() => onNavigate("memorybank")} className="mt-6 rounded-xl bg-white px-4 py-3 text-[12px] font-bold text-[#2c6e5b]">Add a memory</button></>}</div></section><div className="mt-5 rounded-[18px] border border-[#e3d9ed] bg-[#f8f4fb] p-5 text-[12px] leading-relaxed text-[#756783]"><strong>Memory safety:</strong> MindMitra never invents personal memories. This prompt is based only on information saved in your Personal Memory Bank or Family Memory Vault.</div></div>;
 }
 
-function VoicePage({ onNavigate, memories, setMemories }: { onNavigate: (page: Page) => void; memories: Array<SavedMemory | FamilyMemory>; setMemories: React.Dispatch<React.SetStateAction<SavedMemory[]>> }) {
+function VoicePage({ onNavigate, memories, setMemories, onPersist }: { onNavigate: (page: Page) => void; memories: Array<SavedMemory | FamilyMemory>; setMemories: React.Dispatch<React.SetStateAction<SavedMemory[]>>; onPersist: (memory: SavedMemory) => void }) {
   type VoiceLanguage = "en-IN" | "hi-IN" | "te-IN";
   const languages: Array<{ code: VoiceLanguage; label: string; native: string; prompt: string }> = [
     { code: "en-IN", label: "English", native: "English", prompt: "Speak your memory or reminder" },
@@ -585,7 +640,7 @@ function VoicePage({ onNavigate, memories, setMemories }: { onNavigate: (page: P
     const title = isReminder ? (detected === "hi-IN" ? "बोलकर बनाया रिमाइंडर" : detected === "te-IN" ? "వాయిస్ రిమైండర్" : "Voice reminder") : (detected === "hi-IN" ? "मेरी आवाज़ की याद" : detected === "te-IN" ? "నా వాయిస్ జ్ఞాపకం" : "Voice memory");
     return { id: makeId("voice-memory"), title, description: text.trim(), category, date, time, pinned: false, createdAt: new Date().toISOString(), language: detected, source: "voice" };
   };
-  const saveVoiceMemory = (text: string) => { const detected = detectLanguage(text); const item = understandMemory(text, detected); setMemories((current) => [item, ...current]); setSavedMemory(item); const confirmation = detected === "hi-IN" ? `ठीक है। मैंने आपकी याद सेव कर ली है। ${item.description}` : detected === "te-IN" ? `సరే. మీ జ్ఞాపకాన్ని సేవ్ చేశాను. ${item.description}` : `Okay. I saved your memory. ${item.description}`; setStatus(confirmation); speak(confirmation); };
+  const saveVoiceMemory = (text: string) => { const detected = detectLanguage(text); const item = understandMemory(text, detected); setMemories((current) => [item, ...current]); onPersist(item); setSavedMemory(item); const confirmation = detected === "hi-IN" ? `ठीक है। मैंने आपकी याद सेव कर ली है। ${item.description}` : detected === "te-IN" ? `సరే. మీ జ్ఞాపకాన్ని సేవ్ చేశాను. ${item.description}` : `Okay. I saved your memory. ${item.description}`; setStatus(confirmation); speak(confirmation); };
   const startListening = () => { const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition; if (!SpeechRecognition) { setSupported(false); return; } setHeard(""); setSavedMemory(null); setStatus(""); const recognition = new SpeechRecognition(); recognition.lang = language; recognition.interimResults = false; recognition.continuous = false; recognition.onstart = () => setListening(true); recognition.onerror = () => { setListening(false); setStatus(language === "hi-IN" ? "कृपया फिर से बोलें।" : language === "te-IN" ? "దయచేసి మళ్లీ చెప్పండి." : "Please try again."); }; recognition.onend = () => setListening(false); recognition.onresult = (event: any) => { const text = Array.from(event.results).map((result: any) => result[0].transcript).join(""); setHeard(text); saveVoiceMemory(text); }; recognition.start(); };
   const readMemories = () => { const message = memories.length ? memories.slice(0, 4).map((memory) => `${memory.title}. ${memory.description}`).join(". ") : (language === "hi-IN" ? "अभी कोई याद सेव नहीं है।" : language === "te-IN" ? "ఇంకా జ్ఞాపకాలు సేవ్ కాలేదు." : "You have no saved memories yet."); speak(message); };
   const changeLanguage = (code: VoiceLanguage) => { setLanguage(code); window.localStorage.setItem("mindmateVoiceSettings", code); setHeard(""); setStatus(""); setSavedMemory(null); };
@@ -619,7 +674,7 @@ function ReadAloudControls({ text }: { text: string }) {
   return <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#dfeae1] bg-white p-1.5 shadow-sm"><select value={language} onChange={(event) => { setLanguage(event.target.value); window.localStorage.setItem("mindmateVoiceSettings", event.target.value); }} className="rounded-lg bg-[#f4f8f4] px-2 py-2 text-[11px] font-bold text-[#557061] outline-none" aria-label="Read aloud language">{Object.entries(labels).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select><button onClick={read} className="flex min-h-[38px] items-center gap-1.5 rounded-lg bg-[#2c6e5b] px-3 py-2 text-[11px] font-bold text-white" aria-label="Read aloud"><Volume2 size={15} /> {playing ? "Playing" : "Read aloud"}</button>{playing && <><button onClick={() => window.speechSynthesis.pause()} className="rounded-lg bg-[#eef5ef] px-2.5 py-2 text-[11px] font-bold text-[#557061]">Pause</button><button onClick={() => window.speechSynthesis.resume()} className="rounded-lg bg-[#eef5ef] px-2.5 py-2 text-[11px] font-bold text-[#557061]">Resume</button><button onClick={stop} className="rounded-lg bg-[#fff0ee] px-2.5 py-2 text-[11px] font-bold text-[#bd5e51]">Stop</button></>} </div>;
 }
 
-function CaretakerPage({ memories, familyMemories, results, notes }: { memories: SavedMemory[]; familyMemories: FamilyMemory[]; results: Result[]; notes: Note[] }) {
+function CaretakerPage({ memories, familyMemories, results, notes, backendMemories, backendActivities }: { memories: SavedMemory[]; familyMemories: FamilyMemory[]; results: Result[]; notes: Note[]; backendMemories: SavedMemory[]; backendActivities: any[] }) {
   const [demoMode, setDemoMode] = useState(true);
   const [accessGranted, setAccessGranted] = useState(false);
   const demoMemories: SavedMemory[] = [
@@ -627,10 +682,11 @@ function CaretakerPage({ memories, familyMemories, results, notes }: { memories:
     { id: "demo-2", title: "परिवार की याद", description: "बेटी के साथ रविवार का खाना बहुत अच्छा था।", category: "Family", date: "2026-09-08", pinned: false, createdAt: "2026-09-08T17:35:00", language: "hi-IN", source: "voice" },
     { id: "demo-3", title: "కుటుంబ జ్ఞాపకం", description: "మనవళ్లతో సాయంత్రం గడిపాను.", category: "Family", date: "2026-09-06", pinned: false, createdAt: "2026-09-06T18:00:00", language: "te-IN", source: "voice" },
   ];
-  const activeMemories = demoMode ? [...memories, ...demoMemories] : memories;
+  const persistedMemories = backendMemories.length ? backendMemories : [...memories, ...familyMemories];
+  const activeMemories = demoMode ? [...persistedMemories, ...demoMemories] : persistedMemories;
   const voiceMemories = activeMemories.filter((memory) => memory.source === "voice");
-  const readCount = Number(window.localStorage.getItem("mindmateReadAloudCount") || "0");
-  const lastActivity = activeMemories.map((memory) => memory.createdAt).sort().at(-1) || results.map((result) => result.createdAt).sort().at(-1);
+  const readCount = backendActivities.filter((activity) => activity.activityType === "read_aloud").length || Number(window.localStorage.getItem("mindmateReadAloudCount") || "0");
+  const lastActivity = [...activeMemories.map((memory) => memory.createdAt), ...backendActivities.map((activity) => new Date(activity.occurredAt).toISOString()), ...results.map((result) => result.createdAt)].sort().at(-1);
   const daysSince = lastActivity ? Math.max(0, Math.floor((Date.now() - new Date(lastActivity).getTime()) / 86400000)) : 99;
   const status = daysSince <= 1 ? { label: "Active", color: "green", icon: "🟢" } : daysSince <= 4 ? { label: "Less active", color: "amber", icon: "🟡" } : { label: "No recent activity", color: "red", icon: "🔴" };
   const languageCounts = { "English": activeMemories.filter((memory) => memory.language === "en-IN").length, "Hindi": activeMemories.filter((memory) => memory.language === "hi-IN").length, "Telugu": activeMemories.filter((memory) => memory.language === "te-IN").length };
