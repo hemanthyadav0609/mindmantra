@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import {
@@ -555,12 +555,36 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 
 function ReadAloudButton({ text }: { text: string }) {
-  const speak = () => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  const [language] = useState(() => window.localStorage.getItem("mindmateVoiceSettings") || "en-IN");
+  const [playing, setPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const synthesize = trpc.mindmitra.synthesizeSpeech.useMutation();
+  const fallback = () => {
+    if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = language;
+    utterance.onstart = () => setPlaying(true);
+    utterance.onend = () => setPlaying(false);
+    utterance.onerror = () => setPlaying(false);
+    window.speechSynthesis.speak(utterance);
   };
-  return <button onClick={speak} className="flex items-center gap-1.5 rounded-lg bg-[#eef5ef] px-3 py-2 text-[11px] font-bold text-[#2c6e5b] hover:bg-[#deede4]" aria-label="Read aloud"><Volume2 size={14} /> Read aloud</button>;
+  const read = async () => {
+    setPlaying(true);
+    try {
+      const result = await synthesize.mutateAsync({ text, languageCode: language as "en-IN" | "hi-IN" | "te-IN", pace: Number(window.localStorage.getItem("mindmateSpeechRate") || "0.9") });
+      const audio = new Audio(result.audioDataUrl);
+      audioRef.current = audio;
+      audio.onended = () => setPlaying(false);
+      audio.onerror = () => { setPlaying(false); fallback(); };
+      await audio.play();
+      window.localStorage.setItem("mindmateReadAloudCount", String(Number(window.localStorage.getItem("mindmateReadAloudCount") || "0") + 1));
+    } catch {
+      setPlaying(false);
+      fallback();
+    }
+  };
+  return <button onClick={read} disabled={playing} className="flex items-center gap-1.5 rounded-lg bg-[#eef5ef] px-3 py-2 text-[11px] font-bold text-[#2c6e5b] hover:bg-[#deede4] disabled:cursor-wait disabled:opacity-70" aria-label="Read aloud"><Volume2 size={14} /> {playing ? "Playing" : "Read aloud"}</button>;
 }
 
 function MemoryBankPage({ memories, setMemories, onPersist, onDeletePersist }: { memories: SavedMemory[]; setMemories: React.Dispatch<React.SetStateAction<SavedMemory[]>>; onPersist: (memory: SavedMemory) => void; onDeletePersist: (id: string) => void }) {
@@ -654,24 +678,41 @@ function ReadAloudControls({ text }: { text: string }) {
   const [language, setLanguage] = useState<string>(() => window.localStorage.getItem("mindmateVoiceSettings") || "en-IN");
   const [rate, setRate] = useState<number>(() => Number(window.localStorage.getItem("mindmateSpeechRate") || "0.9"));
   const [playing, setPlaying] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const synthesize = trpc.mindmitra.synthesizeSpeech.useMutation();
   const labels: Record<string, string> = { "en-IN": "English", "hi-IN": "हिन्दी", "te-IN": "తెలుగు" };
-  const read = () => {
+  const fallback = () => {
     if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = language;
     utterance.rate = rate;
-    const voice = window.speechSynthesis.getVoices().find((item) => item.lang.toLowerCase().startsWith(language.slice(0, 2).toLowerCase())) || window.speechSynthesis.getVoices()[0];
-    if (voice) utterance.voice = voice;
     utterance.onstart = () => setPlaying(true);
-    utterance.onend = () => setPlaying(false);
-    utterance.onerror = () => setPlaying(false);
+    utterance.onend = () => { setPlaying(false); setPaused(false); };
+    utterance.onerror = () => { setPlaying(false); setPaused(false); };
     window.speechSynthesis.speak(utterance);
-    const count = Number(window.localStorage.getItem("mindmateReadAloudCount") || "0") + 1;
-    window.localStorage.setItem("mindmateReadAloudCount", String(count));
   };
-  const stop = () => { window.speechSynthesis.cancel(); setPlaying(false); };
-  return <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#dfeae1] bg-white p-1.5 shadow-sm"><select value={language} onChange={(event) => { setLanguage(event.target.value); window.localStorage.setItem("mindmateVoiceSettings", event.target.value); }} className="rounded-lg bg-[#f4f8f4] px-2 py-2 text-[11px] font-bold text-[#557061] outline-none" aria-label="Read aloud language">{Object.entries(labels).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select><button onClick={read} className="flex min-h-[38px] items-center gap-1.5 rounded-lg bg-[#2c6e5b] px-3 py-2 text-[11px] font-bold text-white" aria-label="Read aloud"><Volume2 size={15} /> {playing ? "Playing" : "Read aloud"}</button>{playing && <><button onClick={() => window.speechSynthesis.pause()} className="rounded-lg bg-[#eef5ef] px-2.5 py-2 text-[11px] font-bold text-[#557061]">Pause</button><button onClick={() => window.speechSynthesis.resume()} className="rounded-lg bg-[#eef5ef] px-2.5 py-2 text-[11px] font-bold text-[#557061]">Resume</button><button onClick={stop} className="rounded-lg bg-[#fff0ee] px-2.5 py-2 text-[11px] font-bold text-[#bd5e51]">Stop</button></>} </div>;
+  const read = async () => {
+    setPlaying(true);
+    setPaused(false);
+    try {
+      const result = await synthesize.mutateAsync({ text, languageCode: language as "en-IN" | "hi-IN" | "te-IN", pace: rate });
+      const audio = new Audio(result.audioDataUrl);
+      audioRef.current = audio;
+      audio.onended = () => { setPlaying(false); setPaused(false); };
+      audio.onerror = () => { setPlaying(false); setPaused(false); fallback(); };
+      await audio.play();
+      window.localStorage.setItem("mindmateReadAloudCount", String(Number(window.localStorage.getItem("mindmateReadAloudCount") || "0") + 1));
+    } catch {
+      setPlaying(false);
+      fallback();
+    }
+  };
+  const pause = () => { audioRef.current?.pause(); setPaused(true); };
+  const resume = () => { void audioRef.current?.play(); setPaused(false); };
+  const stop = () => { audioRef.current?.pause(); if (audioRef.current) audioRef.current.currentTime = 0; if ("speechSynthesis" in window) window.speechSynthesis.cancel(); setPlaying(false); setPaused(false); };
+  return <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#dfeae1] bg-white p-1.5 shadow-sm"><select value={language} onChange={(event) => { setLanguage(event.target.value); window.localStorage.setItem("mindmateVoiceSettings", event.target.value); }} className="rounded-lg bg-[#f4f8f4] px-2 py-2 text-[11px] font-bold text-[#557061] outline-none" aria-label="Read aloud language">{Object.entries(labels).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select><button onClick={read} disabled={playing} className="flex min-h-[38px] items-center gap-1.5 rounded-lg bg-[#2c6e5b] px-3 py-2 text-[11px] font-bold text-white disabled:cursor-wait disabled:opacity-70" aria-label="Read aloud"><Volume2 size={15} /> {playing ? (paused ? "Paused" : "Playing") : "Read aloud"}</button>{playing && <>{paused ? <button onClick={resume} className="rounded-lg bg-[#eef5ef] px-2.5 py-2 text-[11px] font-bold text-[#557061]">Resume</button> : <button onClick={pause} className="rounded-lg bg-[#eef5ef] px-2.5 py-2 text-[11px] font-bold text-[#557061]">Pause</button>}<button onClick={stop} className="rounded-lg bg-[#fff0ee] px-2.5 py-2 text-[11px] font-bold text-[#bd5e51]">Stop</button></>} </div>;
 }
 
 function CaretakerPage({ memories, familyMemories, results, notes, backendMemories, backendActivities }: { memories: SavedMemory[]; familyMemories: FamilyMemory[]; results: Result[]; notes: Note[]; backendMemories: SavedMemory[]; backendActivities: any[] }) {

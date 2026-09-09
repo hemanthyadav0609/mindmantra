@@ -1,8 +1,10 @@
 import { COOKIE_NAME } from "@shared/const";
+import { TRPCError } from "@trpc/server";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { deleteMindMitraMemory, getMindMitraActivity, listMindMitraMemories, recordMindMitraActivity, upsertMindMitraMemory } from "./db";
+import { SARVAM_LANGUAGES, SarvamTtsError, synthesizeSarvamSpeech } from "./sarvam";
 import { z } from "zod";
 
 const ownerInput = z.object({ ownerKey: z.string().min(16).max(128) });
@@ -25,6 +27,11 @@ const activityInput = ownerInput.extend({
   accuracy: z.number().int().optional(),
   language: z.string().max(16).optional(),
 });
+const sarvamTtsInput = z.object({
+  text: z.string().trim().min(1).max(2500),
+  languageCode: z.enum(SARVAM_LANGUAGES),
+  pace: z.number().min(0.5).max(2).default(0.9),
+});
 
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -41,6 +48,16 @@ export const appRouter = router({
   }),
 
   mindmitra: router({
+    synthesizeSpeech: publicProcedure.input(sarvamTtsInput).mutation(async ({ input }) => {
+      try {
+        return await synthesizeSarvamSpeech(input);
+      } catch (error) {
+        if (error instanceof SarvamTtsError) {
+          throw new TRPCError({ code: error.statusCode === 400 ? "BAD_REQUEST" : error.statusCode === 429 ? "TOO_MANY_REQUESTS" : "BAD_GATEWAY", message: error.message });
+        }
+        throw error;
+      }
+    }),
     memories: publicProcedure.input(ownerInput).query(({ input }) => listMindMitraMemories(input.ownerKey)),
     saveMemory: publicProcedure.input(memoryInput).mutation(({ input }) => upsertMindMitraMemory({
       ownerKey: input.ownerKey,
