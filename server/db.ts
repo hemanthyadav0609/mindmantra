@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertMindMitraActivity, InsertMindMitraMemory, mindmitraActivities, mindmitraMemories, InsertUser, users } from "../drizzle/schema";
+import { InsertMindMitraActivity, InsertMindMitraMemory, InsertMindMitraFamilyMemory, mindmitraActivities, mindmitraMemories, mindmitraFamilyMemories, mindmitraFamilyPhotos, InsertUser, users } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -131,4 +131,46 @@ export async function getMindMitraActivity(ownerKey: string) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(mindmitraActivities).where(eq(mindmitraActivities.ownerKey, ownerKey)).orderBy(desc(mindmitraActivities.occurredAt));
+}
+
+export type FamilyPhotoReference = {
+  storageKey: string;
+  url: string;
+  fileName: string;
+  contentType: string;
+};
+
+export async function listFamilyMemories(ownerKey: string) {
+  const db = await getDb();
+  if (!db) return [];
+  const memories = await db.select().from(mindmitraFamilyMemories).where(eq(mindmitraFamilyMemories.ownerKey, ownerKey)).orderBy(desc(mindmitraFamilyMemories.createdAt));
+  const photos = await db.select().from(mindmitraFamilyPhotos).where(eq(mindmitraFamilyPhotos.ownerKey, ownerKey));
+  return memories.map((memory) => ({ ...memory, photos: photos.filter((photo) => photo.memoryExternalId === memory.externalId) }));
+}
+
+export async function upsertFamilyMemory(memory: InsertMindMitraFamilyMemory, photos: FamilyPhotoReference[]) {
+  const db = await getDb();
+  if (!db) return false;
+  await db.insert(mindmitraFamilyMemories).values(memory).onDuplicateKeyUpdate({
+    set: {
+      title: memory.title,
+      description: memory.description,
+      personName: memory.personName,
+      memoryDate: memory.memoryDate,
+      language: memory.language,
+    },
+  });
+  await db.delete(mindmitraFamilyPhotos).where(and(eq(mindmitraFamilyPhotos.ownerKey, memory.ownerKey), eq(mindmitraFamilyPhotos.memoryExternalId, memory.externalId)));
+  if (photos.length) {
+    await db.insert(mindmitraFamilyPhotos).values(photos.map((photo) => ({ ...photo, ownerKey: memory.ownerKey, memoryExternalId: memory.externalId })));
+  }
+  return true;
+}
+
+export async function deleteFamilyMemory(ownerKey: string, externalId: string) {
+  const db = await getDb();
+  if (!db) return false;
+  await db.delete(mindmitraFamilyPhotos).where(and(eq(mindmitraFamilyPhotos.ownerKey, ownerKey), eq(mindmitraFamilyPhotos.memoryExternalId, externalId)));
+  await db.delete(mindmitraFamilyMemories).where(and(eq(mindmitraFamilyMemories.ownerKey, ownerKey), eq(mindmitraFamilyMemories.externalId, externalId)));
+  return true;
 }

@@ -59,3 +59,34 @@ export type MindMitraMemory = typeof mindmitraMemories.$inferSelect;
 export type InsertMindMitraMemory = typeof mindmitraMemories.$inferInsert;
 export type MindMitraActivity = typeof mindmitraActivities.$inferSelect;
 export type InsertMindMitraActivity = typeof mindmitraActivities.$inferInsert;
+
+export const mindmitraFamilyMemories = mysqlTable("mindmitra_family_memories", {
+  id: int("id").autoincrement().primaryKey(),
+  ownerKey: varchar("ownerKey", { length: 128 }).notNull(),
+  externalId: varchar("externalId", { length: 128 }).notNull(),
+  title: varchar("title", { length: 255 }).notNull(),
+  description: text("description").notNull(),
+  personName: varchar("personName", { length: 160 }).notNull(),
+  memoryDate: varchar("memoryDate", { length: 64 }).notNull(),
+  language: varchar("language", { length: 16 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  ownerExternalIdx: uniqueIndex("mindmitra_family_owner_external_idx").on(table.ownerKey, table.externalId),
+}));
+
+export const mindmitraFamilyPhotos = mysqlTable("mindmitra_family_photos", {
+  id: int("id").autoincrement().primaryKey(),
+  ownerKey: varchar("ownerKey", { length: 128 }).notNull(),
+  memoryExternalId: varchar("memoryExternalId", { length: 128 }).notNull(),
+  storageKey: varchar("storageKey", { length: 512 }).notNull(),
+  url: varchar("url", { length: 1024 }).notNull(),
+  fileName: varchar("fileName", { length: 255 }).notNull(),
+  contentType: varchar("contentType", { length: 100 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type MindMitraFamilyMemory = typeof mindmitraFamilyMemories.$inferSelect;
+export type InsertMindMitraFamilyMemory = typeof mindmitraFamilyMemories.$inferInsert;
+export type MindMitraFamilyPhoto = typeof mindmitraFamilyPhotos.$inferSelect;
+export type InsertMindMitraFamilyPhoto = typeof mindmitraFamilyPhotos.$inferInsert;

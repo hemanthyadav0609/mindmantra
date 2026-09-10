@@ -17,6 +17,7 @@ import {
   Gamepad2,
   Gauge,
   HeartPulse,
+  ImageIcon,
   Lightbulb,
   Languages,
   ListFilter,
@@ -53,7 +54,7 @@ import {
   XAxis,
 } from "recharts";
 
-type Page = "dashboard" | "exercises" | "memories" | "memorybank" | "family" | "reminiscence" | "voice" | "progress" | "profile" | "caretaker" | "settings";
+type Page = "dashboard" | "exercises" | "memories" | "memorybank" | "family" | "familyMemories" | "reminiscence" | "voice" | "progress" | "profile" | "caretaker" | "settings";
 type Difficulty = "Easy" | "Medium" | "Hard";
 type GameType = "memory" | "attention" | "wordsearch";
 
@@ -86,6 +87,8 @@ type Note = {
 
 type SavedMemory = { id: string; title: string; description: string; category: string; date: string; time?: string; pinned: boolean; createdAt: string; language?: "en-IN" | "hi-IN" | "te-IN"; source?: "voice" | "typed" | "family" };
 type FamilyMemory = SavedMemory & { relationship?: string };
+type FamilyPhotoReference = { id?: number; storageKey: string; url: string; fileName: string; contentType: string; createdAt?: string };
+type StoredFamilyMemory = { externalId: string; title: string; description: string; personName: string; memoryDate: string; language: "en-IN" | "hi-IN" | "te-IN"; createdAt: string; photos: FamilyPhotoReference[] };
 
 function fromDatabaseMemory(memory: any): SavedMemory {
   return {
@@ -228,6 +231,7 @@ export default function Home() {
   const [ownerKey] = useLocalStorage<string>("mindmateBackendOwnerKey", uid("owner"));
   const backendMemories = trpc.mindmitra.memories.useQuery({ ownerKey });
   const backendActivities = trpc.mindmitra.activityLog.useQuery({ ownerKey });
+  const familyMemoriesQuery = trpc.mindmitra.familyMemories.useQuery({ ownerKey });
   const saveMemoryMutation = trpc.mindmitra.saveMemory.useMutation();
   const deleteMemoryMutation = trpc.mindmitra.deleteMemory.useMutation();
   const activityMutation = trpc.mindmitra.activity.useMutation();
@@ -237,6 +241,12 @@ export default function Home() {
   const dashboardMetrics = getDashboardMetrics(results);
   const streak = dashboardMetrics.streak;
   const completedNotes = notes.filter((note) => note.completed).length;
+  const storedFamilyMemories: StoredFamilyMemory[] = (familyMemoriesQuery.data || []).map((memory) => ({
+    ...memory,
+    language: memory.language as StoredFamilyMemory["language"],
+    createdAt: new Date(memory.createdAt).toISOString(),
+    photos: memory.photos.map((photo) => ({ ...photo, createdAt: new Date(photo.createdAt).toISOString() })),
+  }));
   const recommendation = useMemo(() => generateAIRecommendation({ history: results, profile: normalizeProfile(profile) }), [results, profile]);
   const dailyChallenge = useMemo(() => getDailyChallenge(results), [results]);
   const trainingPlan = useMemo(() => getTrainingPlan(results, profile.difficulty), [results, profile.difficulty]);
@@ -296,6 +306,7 @@ export default function Home() {
     { id: "memorybank", label: "My memories", icon: HeartPulse },
     { id: "reminiscence", label: "Reminiscence", icon: Sparkles },
     { id: "family", label: "Family vault", icon: UserRound },
+    { id: "familyMemories", label: "Family memories", icon: ImageIcon },
     { id: "voice", label: "Voice mode", icon: Mic },
     { id: "progress", label: "Progress", icon: Trophy },
     { id: "caretaker", label: "Caretaker view", icon: UsersRound },
@@ -366,16 +377,17 @@ export default function Home() {
           {page === "memories" && <MemoriesPage notes={notes} setNotes={setNotes} completedNotes={completedNotes} />}
           {page === "memorybank" && <MemoryBankPage memories={personalMemories} setMemories={setPersonalMemories} onPersist={persistMemory} onDeletePersist={removePersistedMemory} />}
           {page === "family" && <FamilyVaultPage memories={familyMemories} setMemories={setFamilyMemories} onPersist={persistMemory} onDeletePersist={removePersistedMemory} />}
+          {page === "familyMemories" && <FamilyMemoriesPage ownerKey={ownerKey} memories={storedFamilyMemories} />}
           {page === "reminiscence" && <ReminiscencePage memories={[...personalMemories, ...familyMemories]} onNavigate={goTo} />}
           {page === "voice" && <VoicePage onNavigate={goTo} memories={[...personalMemories, ...familyMemories]} setMemories={setPersonalMemories} onPersist={persistMemory} />}
           {page === "progress" && <ProgressPage results={results} averageScore={averageScore} averageAccuracy={averageAccuracy} />}
           {page === "profile" && <ProfilePage profile={profile} setProfile={setProfile} />}
-          {page === "caretaker" && <CaretakerPage memories={personalMemories} familyMemories={familyMemories} results={results} notes={notes} backendMemories={backendMemories.data?.map(fromDatabaseMemory) || []} backendActivities={backendActivities.data || []} />}
+          {page === "caretaker" && <CaretakerPage memories={personalMemories} familyMemories={familyMemories} results={results} notes={notes} backendMemories={backendMemories.data?.map(fromDatabaseMemory) || []} backendFamilyMemories={storedFamilyMemories} backendActivities={backendActivities.data || []} />}
           {page === "settings" && <AccessibilitySettingsPage fontScale={fontScale} setFontScale={setFontScale} />}
           <footer className="mt-12 flex flex-col gap-2 border-t border-[#dfe8e0] pt-5 text-[11px] text-[#91a097] sm:flex-row sm:items-center sm:justify-between"><span>MindMitra AI · Cognitive Wellness Companion</span><span className="flex items-center gap-1"><LockKeyhole size={12} /> Your memories are stored in the private MindMitra database, with local fallback.</span></footer>
         </div>
         <nav className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around border-t border-[#dfe8e0] bg-[#f8fbf7]/95 px-2 py-2 shadow-[0_-8px_24px_rgba(47,79,64,.08)] backdrop-blur-xl md:hidden" aria-label="Mobile navigation">
-          {[{ id: "dashboard" as Page, label: "Home", icon: Activity }, { id: "exercises" as Page, label: "Games", icon: Gamepad2 }, { id: "memorybank" as Page, label: "Memories", icon: HeartPulse }, { id: "voice" as Page, label: "Voice", icon: Mic }, { id: "progress" as Page, label: "Progress", icon: Trophy }, { id: "profile" as Page, label: "Profile", icon: UserRound }].map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => goTo(item.id)} className={`flex min-w-[50px] flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[10px] font-bold ${page === item.id ? "bg-[#deede4] text-[#2c6e5b]" : "text-[#83938a]"}`} aria-label={item.label}><Icon size={17} /><span>{item.label}</span></button>; })}
+          {[{ id: "dashboard" as Page, label: "Home", icon: Activity }, { id: "exercises" as Page, label: "Games", icon: Gamepad2 }, { id: "memorybank" as Page, label: "Memories", icon: HeartPulse }, { id: "familyMemories" as Page, label: "Family", icon: ImageIcon }, { id: "voice" as Page, label: "Voice", icon: Mic }, { id: "progress" as Page, label: "Progress", icon: Trophy }, { id: "profile" as Page, label: "Profile", icon: UserRound }].map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => goTo(item.id)} className={`flex min-w-[50px] flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[10px] font-bold ${page === item.id ? "bg-[#deede4] text-[#2c6e5b]" : "text-[#83938a]"}`} aria-label={item.label}><Icon size={17} /><span>{item.label}</span></button>; })}
         </nav>
       </main>
     </div>
@@ -622,6 +634,103 @@ function FamilyVaultPage({ memories, setMemories, onPersist, onDeletePersist }: 
   </CollectionPage>;
 }
 
+
+function readFileAsBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(new Error("Could not read this photo."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function familyLanguageLabel(language: StoredFamilyMemory["language"]) {
+  return language === "hi-IN" ? "हिन्दी" : language === "te-IN" ? "తెలుగు" : "English";
+}
+
+function FamilyMemoriesPage({ ownerKey, memories }: { ownerKey: string; memories: StoredFamilyMemory[] }) {
+  const [query, setQuery] = useState("");
+  const [showComposer, setShowComposer] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [existingPhotos, setExistingPhotos] = useState<FamilyPhotoReference[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [draft, setDraft] = useState({ title: "", description: "", personName: "", memoryDate: new Date().getFullYear().toString(), language: "en-IN" as StoredFamilyMemory["language"] });
+  const uploadPhoto = trpc.mindmitra.uploadFamilyPhoto.useMutation();
+  const saveMemory = trpc.mindmitra.saveFamilyMemory.useMutation();
+  const deleteMemory = trpc.mindmitra.deleteFamilyMemory.useMutation();
+  const utils = trpc.useUtils();
+  const filtered = memories.filter((memory) => `${memory.title} ${memory.description} ${memory.personName}`.toLowerCase().includes(query.toLowerCase()));
+
+  const resetComposer = () => {
+    setDraft({ title: "", description: "", personName: "", memoryDate: new Date().getFullYear().toString(), language: "en-IN" });
+    setSelectedFiles([]);
+    setExistingPhotos([]);
+    setEditingId(null);
+    setShowComposer(false);
+    setError("");
+  };
+  const editMemory = (memory: StoredFamilyMemory) => {
+    setDraft({ title: memory.title, description: memory.description, personName: memory.personName, memoryDate: memory.memoryDate, language: memory.language });
+    setExistingPhotos(memory.photos);
+    setSelectedFiles([]);
+    setEditingId(memory.externalId);
+    setShowComposer(true);
+    setError("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const choosePhotos = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(event.target.files || []);
+    const valid = incoming.filter((file) => file.type.startsWith("image/") && file.size <= 5 * 1024 * 1024);
+    if (valid.length !== incoming.length) setError("Please choose image files smaller than 5 MB each.");
+    setSelectedFiles((current) => [...current, ...valid].slice(0, Math.max(0, 8 - existingPhotos.length)));
+    event.target.value = "";
+  };
+  const save = async () => {
+    if (!draft.title.trim() || !draft.description.trim() || !draft.personName.trim() || !draft.memoryDate.trim()) {
+      setError("Please fill in the title, description, person name, and date or year.");
+      return;
+    }
+    if (existingPhotos.length + selectedFiles.length < 1) {
+      setError("Please add at least one family photo.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const uploaded = await Promise.all(selectedFiles.map(async (file) => {
+        const result = await uploadPhoto.mutateAsync({ ownerKey, fileName: file.name, contentType: file.type as "image/jpeg" | "image/png" | "image/webp" | "image/gif", base64: await readFileAsBase64(file) });
+        return { storageKey: result.key, url: result.url, fileName: result.fileName, contentType: result.contentType };
+      }));
+      await saveMemory.mutateAsync({ ownerKey, externalId: editingId || makeId("family-memory"), title: draft.title.trim(), description: draft.description.trim(), personName: draft.personName.trim(), memoryDate: draft.memoryDate.trim(), language: draft.language, photos: [...existingPhotos.map(({ storageKey, url, fileName, contentType }) => ({ storageKey, url, fileName, contentType })), ...uploaded] });
+      await utils.mindmitra.familyMemories.invalidate();
+      resetComposer();
+    } catch {
+      setError("We could not save this memory right now. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const remove = async (memory: StoredFamilyMemory) => {
+    if (!window.confirm(`Delete the memory “${memory.title}”?`)) return;
+    try {
+      await deleteMemory.mutateAsync({ ownerKey, externalId: memory.externalId });
+      await utils.mindmitra.familyMemories.invalidate();
+    } catch {
+      setError("We could not delete this memory right now. Please try again.");
+    }
+  };
+
+  return <div className="mx-auto max-w-[1120px]">
+    <div className="mb-7 flex flex-col justify-between gap-4 lg:flex-row lg:items-end"><div><div className="eyebrow mb-2 text-[#b58340]">Family memories</div><h1 className="display-font text-[38px] font-bold tracking-[-.04em] text-[#23463a]">Keep family close</h1><p className="mt-2 max-w-[700px] text-[15px] leading-relaxed text-[#73847a]">Save a story, the people in it, and the photos that make it easy to remember together.</p></div><div className="flex flex-wrap gap-2"><ReadAloudControls text={`Family memories. ${memories.length} saved family memories.`} /><button onClick={() => { setShowComposer((value) => !value); setEditingId(null); }} className="flex min-h-[50px] items-center gap-2 rounded-[14px] bg-[#c88740] px-5 py-3 text-[14px] font-bold text-white shadow-[0_8px_20px_rgba(200,135,64,.2)] hover:bg-[#b87733]"><Plus size={18} /> Add family memory</button></div></div>
+    <div className="mb-5 grid gap-3 sm:grid-cols-3"><MiniStat label="Saved memories" value={memories.length} /><MiniStat label="Family photos" value={memories.reduce((total, memory) => total + memory.photos.length, 0)} /><MiniStat label="People remembered" value={new Set(memories.map((memory) => memory.personName)).size} /></div>
+    {showComposer && <section className="soft-card mb-6 border-2 border-[#efdfc3] bg-[#fffaf1] p-5 sm:p-7"><div className="mb-5 flex items-start justify-between gap-3"><div><div className="eyebrow mb-1 text-[#b58340]">{editingId ? "Edit family memory" : "New family memory"}</div><h2 className="display-font text-[26px] font-bold text-[#2a4a3d]">Tell the story</h2><p className="mt-1 text-[13px] text-[#7f8e84]">Large fields keep this simple. Add at least one photo.</p></div><button onClick={resetComposer} className="grid h-11 w-11 place-items-center rounded-xl bg-white text-[#8b9b91] shadow-sm" aria-label="Close family memory form"><X size={20} /></button></div><div className="grid gap-4 sm:grid-cols-2"><label><div className="mb-2 text-[13px] font-bold text-[#536d5e]">Memory title</div><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Grandmother's birthday" className="profile-input min-h-[52px] text-[15px]" /></label><label><div className="mb-2 text-[13px] font-bold text-[#536d5e]">Family member or person</div><input value={draft.personName} onChange={(event) => setDraft({ ...draft, personName: event.target.value })} placeholder="Who is in this memory?" className="profile-input min-h-[52px] text-[15px]" /></label><label className="sm:col-span-2"><div className="mb-2 text-[13px] font-bold text-[#536d5e]">Memory description</div><textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} rows={4} placeholder="What happened? Add names, places, and details..." className="profile-input resize-none text-[15px] leading-relaxed" /></label><label><div className="mb-2 text-[13px] font-bold text-[#536d5e]">Date or year</div><input value={draft.memoryDate} onChange={(event) => setDraft({ ...draft, memoryDate: event.target.value })} placeholder="2024 or 2024-05-14" className="profile-input min-h-[52px] text-[15px]" /></label><label><div className="mb-2 text-[13px] font-bold text-[#536d5e]">Memory language</div><select value={draft.language} onChange={(event) => setDraft({ ...draft, language: event.target.value as StoredFamilyMemory["language"] })} className="profile-input min-h-[52px] text-[15px]"><option value="en-IN">English</option><option value="hi-IN">हिन्दी</option><option value="te-IN">తెలుగు</option></select></label></div><div className="mt-5 rounded-[18px] border-2 border-dashed border-[#e5cda5] bg-white p-5"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-2 text-[16px] font-bold text-[#6f593b]"><ImageIcon size={20} /> Family photos</div><p className="mt-1 text-[13px] text-[#8d7b61]">Choose up to 8 photos. Each photo can be up to 5 MB.</p></div><label className="flex min-h-[52px] cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#fff0da] px-5 py-3 text-[14px] font-bold text-[#b27831] hover:bg-[#ffe7c4]"><Plus size={18} /> Choose photos<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple onChange={choosePhotos} className="sr-only" /></label></div>{(existingPhotos.length > 0 || selectedFiles.length > 0) && <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-6">{existingPhotos.map((photo) => <div key={photo.storageKey} className="relative aspect-square overflow-hidden rounded-xl"><img src={photo.url} alt={photo.fileName} className="h-full w-full object-cover" /><button onClick={() => setExistingPhotos((current) => current.filter((item) => item.storageKey !== photo.storageKey))} className="absolute right-1 top-1 grid h-7 w-7 place-items-center rounded-full bg-black/60 text-white" aria-label={`Remove ${photo.fileName}`}><X size={14} /></button></div>)}{selectedFiles.map((file, index) => <div key={`${file.name}-${index}`} className="relative aspect-square overflow-hidden rounded-xl bg-[#f5eee2]"><img src={URL.createObjectURL(file)} alt={file.name} className="h-full w-full object-cover" /><button onClick={() => setSelectedFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="absolute right-1 top-1 grid h-7 w-7 place-items-center rounded-full bg-black/60 text-white" aria-label={`Remove ${file.name}`}><X size={14} /></button></div>)}</div>}</div>{error && <div className="mt-4 rounded-xl bg-[#fff0ee] p-4 text-[14px] font-semibold text-[#b45d52]" role="alert">{error}</div>}<div className="mt-6 flex flex-wrap justify-end gap-3"><button onClick={resetComposer} className="min-h-[50px] rounded-xl px-5 py-3 text-[14px] font-bold text-[#809087]">Cancel</button><button onClick={() => void save()} disabled={saving} className="min-h-[50px] rounded-xl bg-[#2c6e5b] px-6 py-3 text-[14px] font-bold text-white disabled:opacity-60">{saving ? "Saving..." : editingId ? "Save changes" : "Save family memory"}</button></div></section>}
+    <div className="mb-5 flex items-center gap-3 rounded-[16px] border border-[#e7dfcf] bg-white px-4 py-3"><Search size={20} className="text-[#b29b72]" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by memory, person, or story" className="min-h-[40px] min-w-0 flex-1 bg-transparent text-[15px] text-[#4e6759] outline-none placeholder:text-[#a9a08f]" /></div>
+    {filtered.length ? <div className="grid gap-5 lg:grid-cols-2">{filtered.map((memory) => <article key={memory.externalId} className="soft-card overflow-hidden border border-[#eadfce]"><div className="grid grid-cols-4 gap-1 bg-[#f6efe3] p-2">{memory.photos.slice(0, 4).map((photo) => <img key={photo.storageKey} src={photo.url} alt={photo.fileName} className="aspect-square w-full rounded-xl object-cover" />)}{memory.photos.length === 0 && <div className="col-span-4 grid aspect-[4/1] place-items-center rounded-xl bg-[#fff8ed] text-[#b89461]"><ImageIcon size={28} /></div>}</div><div className="p-5 sm:p-6"><div className="mb-3 flex flex-wrap items-start justify-between gap-3"><div><h2 className="display-font text-[24px] font-bold text-[#2a4a3d]">{memory.title}</h2><div className="mt-1 flex items-center gap-2 text-[14px] font-bold text-[#b27831]"><UsersRound size={16} /> {memory.personName}</div></div><span className="rounded-full bg-[#fff0da] px-3 py-1.5 text-[12px] font-bold text-[#a76f2c]">{familyLanguageLabel(memory.language)}</span></div><p className="min-h-[55px] text-[15px] leading-relaxed text-[#718278]">{memory.description}</p><div className="mt-4 flex flex-wrap gap-2 text-[12px] font-semibold text-[#8e806c]"><span className="rounded-full bg-[#f5f0e7] px-3 py-1.5">Memory date: {memory.memoryDate}</span><span className="rounded-full bg-[#f5f0e7] px-3 py-1.5">Added: {makeSafeDate(memory.createdAt)}</span></div><div className="mt-5 flex flex-wrap gap-2 border-t border-[#efe7d9] pt-4"><ReadAloudButton text={`${memory.title}. ${memory.personName}. ${memory.description}`} /><button onClick={() => editMemory(memory)} className="flex min-h-[44px] items-center gap-2 rounded-xl bg-[#eef5ef] px-4 py-2.5 text-[13px] font-bold text-[#2c6e5b]"><MoreHorizontal size={16} /> Edit</button><button onClick={() => void remove(memory)} className="flex min-h-[44px] items-center gap-2 rounded-xl bg-[#fff0ee] px-4 py-2.5 text-[13px] font-bold text-[#bd5e51]"><Trash2 size={16} /> Delete</button></div></div></article>)}</div> : <div className="soft-card p-10 text-center"><div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-[#fff0da] text-[#c88740]"><ImageIcon size={28} /></div><h2 className="display-font mt-5 text-[26px] font-bold text-[#416552]">No family memories yet</h2><p className="mx-auto mt-2 max-w-[460px] text-[15px] leading-relaxed text-[#829188]">Add a family story with a name, date, language, and a photo to start your collection.</p><button onClick={() => setShowComposer(true)} className="mt-6 min-h-[52px] rounded-xl bg-[#c88740] px-6 py-3 text-[14px] font-bold text-white">Add the first memory</button></div>}
+  </div>;
+}
+
 function CollectionPage({ eyebrow, title, description, accent, actionLabel, onAction, children }: { eyebrow: string; title: string; description: string; accent: "green" | "amber"; actionLabel: string; onAction: () => void; children: React.ReactNode }) { const isAmber = accent === "amber"; return <div className="mx-auto max-w-[1060px]"><div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><div className={`eyebrow mb-2 ${isAmber ? "text-[#b5894b]" : "text-[#75a28b]"}`}>{eyebrow}</div><h1 className="display-font text-[38px] font-bold tracking-[-.04em] text-[#23463a]">{title}</h1><p className="mt-2 max-w-[660px] text-[14px] leading-relaxed text-[#73847a]">{description}</p></div><button onClick={onAction} className={`flex w-fit items-center gap-2 rounded-[13px] px-4 py-3 text-[12px] font-bold text-white shadow-sm ${isAmber ? "bg-[#c88740] hover:bg-[#b87733]" : "bg-[#2c6e5b] hover:bg-[#245d4d]"}`}><Plus size={15} /> {actionLabel}</button></div><section className="soft-card p-5 sm:p-7">{children}</section></div>; }
 function MiniStat({ label, value }: { label: string; value: string | number }) { return <div className="rounded-[15px] bg-[#f5f8f5] p-4"><div className="text-[11px] font-semibold text-[#8c9d92]">{label}</div><div className="display-font mt-1 text-2xl font-bold text-[#315b49]">{value}</div></div>; }
 function MemoryComposer({ draft, setDraft, onSave, onCancel, family = false }: { draft: { title: string; description: string; category: string; date: string }; setDraft: (value: any) => void; onSave: () => void; onCancel: () => void; family?: boolean }) { const options = family ? ["Family Member", "Birthday", "Anniversary", "Family Event", "Trip", "Special Moment", "Family Story"] : ["Person", "Place", "Favorite", "Event", "Personal Memory", "Important"]; return <div className="mb-5 rounded-[18px] bg-[#f1f7f2] p-5"><div className="mb-4 flex items-center justify-between"><h2 className="display-font text-[22px] font-bold text-[#2a4a3d]">Save a memory</h2><button onClick={onCancel}><X size={18} className="text-[#93a299]" /></button></div><div className="grid gap-3 sm:grid-cols-2"><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="profile-input" /><input type="date" value={draft.date} onChange={(event) => setDraft({ ...draft, date: event.target.value })} className="profile-input" /><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })} className="profile-input sm:col-span-2">{options.map((option) => <option key={option}>{option}</option>)}</select><textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} rows={3} placeholder="Describe the memory in your own words..." className="profile-input resize-none sm:col-span-2" /></div><div className="mt-4 flex justify-end gap-2"><button onClick={onCancel} className="rounded-xl px-4 py-2.5 text-[12px] font-bold text-[#809087]">Cancel</button><button onClick={onSave} className="rounded-xl bg-[#2c6e5b] px-4 py-2.5 text-[12px] font-bold text-white">Save memory</button></div></div>; }
@@ -715,7 +824,7 @@ function ReadAloudControls({ text }: { text: string }) {
   return <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#dfeae1] bg-white p-1.5 shadow-sm"><select value={language} onChange={(event) => { setLanguage(event.target.value); window.localStorage.setItem("mindmateVoiceSettings", event.target.value); }} className="rounded-lg bg-[#f4f8f4] px-2 py-2 text-[11px] font-bold text-[#557061] outline-none" aria-label="Read aloud language">{Object.entries(labels).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select><button onClick={read} disabled={playing} className="flex min-h-[38px] items-center gap-1.5 rounded-lg bg-[#2c6e5b] px-3 py-2 text-[11px] font-bold text-white disabled:cursor-wait disabled:opacity-70" aria-label="Read aloud"><Volume2 size={15} /> {playing ? (paused ? "Paused" : "Playing") : "Read aloud"}</button>{playing && <>{paused ? <button onClick={resume} className="rounded-lg bg-[#eef5ef] px-2.5 py-2 text-[11px] font-bold text-[#557061]">Resume</button> : <button onClick={pause} className="rounded-lg bg-[#eef5ef] px-2.5 py-2 text-[11px] font-bold text-[#557061]">Pause</button>}<button onClick={stop} className="rounded-lg bg-[#fff0ee] px-2.5 py-2 text-[11px] font-bold text-[#bd5e51]">Stop</button></>} </div>;
 }
 
-function CaretakerPage({ memories, familyMemories, results, notes, backendMemories, backendActivities }: { memories: SavedMemory[]; familyMemories: FamilyMemory[]; results: Result[]; notes: Note[]; backendMemories: SavedMemory[]; backendActivities: any[] }) {
+function CaretakerPage({ memories, familyMemories, results, notes, backendMemories, backendFamilyMemories, backendActivities }: { memories: SavedMemory[]; familyMemories: FamilyMemory[]; results: Result[]; notes: Note[]; backendMemories: SavedMemory[]; backendFamilyMemories: StoredFamilyMemory[]; backendActivities: any[] }) {
   const [demoMode, setDemoMode] = useState(true);
   const [accessGranted, setAccessGranted] = useState(false);
   const demoMemories: SavedMemory[] = [
@@ -723,7 +832,8 @@ function CaretakerPage({ memories, familyMemories, results, notes, backendMemori
     { id: "demo-2", title: "परिवार की याद", description: "बेटी के साथ रविवार का खाना बहुत अच्छा था।", category: "Family", date: "2026-09-08", pinned: false, createdAt: "2026-09-08T17:35:00", language: "hi-IN", source: "voice" },
     { id: "demo-3", title: "కుటుంబ జ్ఞాపకం", description: "మనవళ్లతో సాయంత్రం గడిపాను.", category: "Family", date: "2026-09-06", pinned: false, createdAt: "2026-09-06T18:00:00", language: "te-IN", source: "voice" },
   ];
-  const persistedMemories = backendMemories.length ? backendMemories : [...memories, ...familyMemories];
+  const familyDatabaseMemories: SavedMemory[] = backendFamilyMemories.map((memory) => ({ id: memory.externalId, title: memory.title, description: `${memory.personName}. ${memory.description}`, category: "Family Memory", date: memory.memoryDate, pinned: false, createdAt: memory.createdAt, language: memory.language, source: "family" }));
+  const persistedMemories = backendMemories.length || familyDatabaseMemories.length ? [...backendMemories, ...familyDatabaseMemories] : [...memories, ...familyMemories];
   const activeMemories = demoMode ? [...persistedMemories, ...demoMemories] : persistedMemories;
   const voiceMemories = activeMemories.filter((memory) => memory.source === "voice");
   const readCount = backendActivities.filter((activity) => activity.activityType === "read_aloud").length || Number(window.localStorage.getItem("mindmateReadAloudCount") || "0");
